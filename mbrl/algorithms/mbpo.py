@@ -163,11 +163,11 @@ def train(
         reward_type=dtype,
     )
     random_explore = cfg.algorithm.random_initial_explore
-    mbrl.util.common.rollout_agent_trajectories(
+    mbrl.util.common.rollout_agent_trajectories_vector(
         env,
         cfg.algorithm.initial_exploration_steps,
         mbrl.planning.RandomAgent(env) if random_explore else agent,
-        {} if random_explore else {"sample": True, "batched": False},
+        {} if random_explore else {"sample": True, "batched": True},
         replay_buffer=replay_buffer,
     )
 
@@ -199,6 +199,8 @@ def train(
                 *(cfg.overrides.rollout_schedule + [epoch + 1])
             )
         )
+
+        #TODO figure out the sizes of the buffer
         sac_buffer_capacity = rollout_length * rollout_batch_size * trains_per_epoch
         sac_buffer_capacity *= cfg.overrides.num_epochs_to_retain_sac_buffer
         sac_buffer = maybe_replace_sac_buffer(
@@ -207,12 +209,13 @@ def train(
         obs = None
         terminated = False
         truncated = False
-        for steps_epoch in range(cfg.overrides.epoch_length):
-            if steps_epoch == 0 or terminated or truncated:
-                steps_epoch = 0
+        for steps_epoch in range(int(cfg.overrides.epoch_length)):
+            if steps_epoch == 0:# or terminated or truncated:
+                # steps_epoch = 0
                 obs, _ = env.reset()
-                terminated = False
-                truncated = False
+                #TODO: Vector casualty
+                # terminated = False
+                # truncated = False
             # --- Doing env step and adding to model dataset ---
             (
                 next_obs,
@@ -220,12 +223,12 @@ def train(
                 terminated,
                 truncated,
                 _,
-            ) = mbrl.util.common.step_env_and_add_to_buffer(
+            ) = mbrl.util.common.step_env_and_add_to_buffer_batch(
                 env, obs, agent, {}, replay_buffer
             )
 
             # --------------- Model Training -----------------
-            if (env_steps + 1) % cfg.overrides.freq_train_model == 0:
+            if (env_steps+env.num_envs) % cfg.overrides.freq_train_model == 0:
                 mbrl.util.common.train_model_and_save_model_and_data(
                     dynamics_model,
                     model_trainer,
@@ -234,6 +237,7 @@ def train(
                     work_dir=work_dir,
                 )
 
+                #TODO: Might face problems with model rollouts on replaybuffer
                 # --------- Rollout new model and store imagined trajectories --------
                 # Batch all rollouts for the next freq_train_model steps together
                 rollout_model_and_populate_sac_buffer(
@@ -258,7 +262,8 @@ def train(
             for _ in range(cfg.overrides.num_sac_updates_per_step):
                 use_real_data = rng.random() < cfg.algorithm.real_data_ratio
                 which_buffer = replay_buffer if use_real_data else sac_buffer
-                if (env_steps + 1) % cfg.overrides.sac_updates_every_steps != 0 or len(
+                # TODO: adapt step length to vector
+                if (env_steps+env.num_envs) % cfg.overrides.sac_updates_every_steps != 0 or len(
                     which_buffer
                 ) < cfg.overrides.sac_batch_size:
                     break  # only update every once in a while
@@ -275,7 +280,8 @@ def train(
                     logger.dump(updates_made, save=True)
 
             # ------ Epoch ended (evaluate and save model) ------
-            if (env_steps + 1) % cfg.overrides.epoch_length == 0:
+            # TODO: Vector casualty
+            if (env_steps+env.num_envs) % cfg.overrides.epoch_length == 0:
                 avg_reward = evaluate(
                     test_env, agent, cfg.algorithm.num_eval_episodes, video_recorder
                 )
@@ -296,6 +302,6 @@ def train(
                     )
                 epoch += 1
 
-            env_steps += 1
+            env_steps += env.num_envs
             obs = next_obs
     return np.float32(best_eval_reward)
